@@ -1,18 +1,15 @@
 mod net;
 
 use anyhow::{bail, Result};
-use gcemeta::Client;
+use hyper::client::connect::HttpConnector;
 use hyper_rustls::HttpsConnector;
-// use google_pubsub1 as pubsub1;
-use hyper::{body::Body, client::connect::HttpConnector};
 use oauth2::{storage::TokenInfo, AccessToken};
-// use pubsub1::{hyper, hyper_rustls, oauth2, Pubsub};
 use yup_oauth2 as oauth2;
 
 #[derive(Default, Debug)]
 pub struct UnbuiltPubSub {
     project_id: Option<String>,
-    gce: Option<Gce>,
+    gce: bool,
     sa_key: Option<SAKey>,
 }
 
@@ -61,18 +58,18 @@ impl Topic {
     }
 }
 
-type Gce = Client<HttpConnector, Body>;
 type SAKey = oauth2::ServiceAccountKey;
 type Authenticator = oauth2::authenticator::Authenticator<HttpsConnector<HttpConnector>>;
 
 impl UnbuiltPubSub {
     pub async fn build(mut self) -> Result<PubSub> {
+        let client = reqwest::Client::new();
         let auth_provider = if let Some(sa_key) = self.auto_get_sa_key().await? {
             self.sa_key = Some(sa_key.clone());
             AuthProvider::SA(Self::build_auth(sa_key).await?)
-        } else if let Some(gce) = self.auto_get_gce().await? {
-            self.gce = Some(gce.clone());
-            AuthProvider::Gce(gce)
+        } else if net::is_on_gce(&client).await {
+            self.gce = true;
+            AuthProvider::Gce(client)
         } else {
             bail!("Failed to discover authentication credentials from environment")
         };
@@ -88,22 +85,13 @@ impl UnbuiltPubSub {
             .build()
             .await
     }
-
-    async fn auto_get_gce(&self) -> Result<Option<Gce>> {
-        let gce = Client::new();
-        if gce.on_gce().await? {
-            Ok(Some(gce))
-        } else {
-            Ok(None)
-        }
-    }
     async fn get_project_id(&mut self) -> Result<String> {
         Ok(if let Some(proj_id) = self.project_id.take() {
             proj_id
         } else if let Ok(id) = std::env::var("GCLOUD_PROJECT_ID") {
             id
-        } else if let Some(gce) = &self.gce {
-            gce.project_id().await?
+        } else if self.gce {
+            net::gce_project_id(&reqwest::Client::new()).await?
         } else if let Some(sa_key) = self.sa_key.as_ref().and_then(|sa| sa.project_id.as_ref()) {
             sa_key.clone()
         } else {
@@ -132,14 +120,16 @@ impl UnbuiltPubSub {
 
 #[allow(clippy::large_enum_variant)]
 enum AuthProvider {
-    Gce(Gce),
+    Gce(reqwest::Client),
     SA(Authenticator),
 }
 
 impl AuthProvider {
     async fn token(&self) -> Result<AccessToken> {
         let token: AccessToken = match self {
-            Self::Gce(gce) => serde_json::from_str::<GceResponse>(&gce.token(None).await?)?.into(),
+            Self::Gce(client) => {
+                serde_json::from_str::<GceResponse>(&net::gce_token(client).await?)?.into()
+            }
             Self::SA(auth) => {
                 auth.token(&["https://www.googleapis.com/auth/pubsub"])
                     .await?
