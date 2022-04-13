@@ -15,7 +15,7 @@ impl PubSub {
             client: reqwest::Client::new(),
         })
     }
-    pub fn topic(&self, topic: String) -> Result<Topic<'_>> {
+    pub fn topic(&self, topic: String) -> Result<Topic> {
         Ok(Topic {
             project_id: &self.project_id,
             auth: &self.auth,
@@ -33,7 +33,7 @@ pub struct Topic<'a> {
 }
 
 impl Topic<'_> {
-    pub async fn publish<S>(&mut self, message: &S) -> Result<String>
+    pub async fn publish<S>(&self, message: &S) -> Result<String>
     where
         S: serde::Serialize,
     {
@@ -50,8 +50,6 @@ impl Topic<'_> {
             .post(url)
             .header("User-Agent", "subby_rs/0.1.0")
             .header("Authorization", format!("Bearer {}", token.as_str()))
-            .header("Content-Type", "application/json")
-            //todo: add content length, if it fails
             //todo: make this grpc
             .json(message)
             .send()
