@@ -1,5 +1,3 @@
-mod net;
-
 use anyhow::Result;
 
 pub struct PubSub {
@@ -39,17 +37,28 @@ impl Topic<'_> {
     where
         S: serde::Serialize,
     {
-        let res = net::publish(
-            self.client,
-            &self.topic,
-            self.project_id,
-            self.auth
-                .get_token(&["https://www.googleapis.com/auth/pubsub"])
-                .await?
-                .as_str(),
-            message,
-        )
-        .await?;
+        let url = format!(
+            "https://pubsub.googleapis.com/v1/projects/{}/topics/{}:publish",
+            self.project_id, self.topic
+        );
+        let token = self
+            .auth
+            .get_token(&["https://www.googleapis.com/auth/pubsub"])
+            .await?;
+        let res = self
+            .client
+            .post(url)
+            .header("User-Agent", "subby_rs/0.1.0")
+            .header("Authorization", format!("Bearer {}", token.as_str()))
+            .header("Content-Type", "application/json")
+            //todo: add content length, if it fails
+            //todo: make this grpc
+            .json(message)
+            .send()
+            .await?
+            .text()
+            .await?;
+
         Ok(res)
     }
 }
