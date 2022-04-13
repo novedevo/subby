@@ -61,7 +61,7 @@ impl UnbuiltPubSub {
         Ok(())
     }
     async fn get_sa_key(keypath: &str) -> Result<SAKey> {
-        let key = tokio::fs::read_to_string(keypath).await?;
+        let key = std::fs::read_to_string(keypath)?;
         let key = yup_oauth2::parse_service_account_key(key)?;
         Ok(key)
     }

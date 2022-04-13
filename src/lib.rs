@@ -54,7 +54,6 @@ impl Topic {
 
 type Authenticator = oauth2::authenticator::Authenticator<HttpsConnector<HttpConnector>>;
 
-#[allow(clippy::large_enum_variant)]
 enum AuthProvider {
     Gce(reqwest::Client),
     SA(Authenticator),
