@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 
 pub struct PubSub {
     project_id: String,
@@ -15,13 +15,17 @@ impl PubSub {
             client: reqwest::Client::new(),
         })
     }
-    pub fn topic(&self, topic: String) -> Result<Topic> {
-        Ok(Topic {
+    pub async fn topic(&self, topic: String) -> Result<Topic<'_>> {
+        let topic = Topic {
             project_id: &self.project_id,
             auth: &self.auth,
             topic,
             client: &self.client,
-        })
+        };
+        if !topic.is_valid().await {
+            bail!("Invalid topic name");
+        }
+        Ok(topic)
     }
 }
 
@@ -50,7 +54,6 @@ impl Topic<'_> {
             .post(url)
             .header("User-Agent", "subby_rs/0.1.0")
             .header("Authorization", format!("Bearer {}", token.as_str()))
-            //todo: make this grpc
             .json(message)
             .send()
             .await?
@@ -58,5 +61,17 @@ impl Topic<'_> {
             .await?;
 
         Ok(res)
+    }
+    pub(crate) async fn is_valid(&self) -> bool {
+        let url = format!(
+            "https://pubsub.googleapis.com/v1/projects/{}/topics/{}",
+            self.project_id, self.topic
+        );
+        let req = self.client.get(url).send().await;
+        if let Ok(res) = req {
+            res.status() == 200
+        } else {
+            false
+        }
     }
 }
