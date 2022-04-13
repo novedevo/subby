@@ -1,8 +1,13 @@
+mod net;
+
 use anyhow::{bail, Result};
 use gcemeta::Client;
-use google_pubsub1 as pubsub1;
+use hyper_rustls::HttpsConnector;
+// use google_pubsub1 as pubsub1;
 use hyper::{body::Body, client::connect::HttpConnector};
-use pubsub1::{hyper, hyper_rustls, oauth2, Pubsub};
+use oauth2::{storage::TokenInfo, AccessToken};
+// use pubsub1::{hyper, hyper_rustls, oauth2, Pubsub};
+use yup_oauth2 as oauth2;
 
 #[derive(Default, Debug)]
 pub struct UnbuiltPubSub {
@@ -18,84 +23,108 @@ pub struct PubSub {
 
 type Gce = Client<HttpConnector, Body>;
 type SAKey = oauth2::ServiceAccountKey;
+type Authenticator = oauth2::authenticator::Authenticator<HttpsConnector<HttpConnector>>;
 
 impl UnbuiltPubSub {
-    pub async fn build(self) -> Result<PubSub> {
-        let auth = if self.gce.is_none() && self.sa_key.is_none() {
-            if self.auto_get_sa_key().await.is_err() && self.auto_get_gce().await.is_err() {
-                bail!("Unable to autodiscover authentication variables.");
-            } else if let Some(sa_key) = self.sa_key {
-                AuthProvider::SAKey(sa_key)
-            } else if let Some(gce) = self.gce {
-                AuthProvider::Gce(gce)
-            } else {
-                unreachable!()
-            }
-        } else if let Some(sa_key) = self.sa_key {
-            AuthProvider::SAKey(sa_key)
-        } else if let Some(gce) = self.gce {
+    pub async fn build(mut self) -> Result<PubSub> {
+        let auth_provider = if let Some(sa_key) = self.auto_get_sa_key().await? {
+            self.sa_key = Some(sa_key.clone());
+            AuthProvider::SA(Self::build_auth(sa_key).await?)
+        } else if let Some(gce) = self.auto_get_gce().await? {
+            self.gce = Some(gce.clone());
             AuthProvider::Gce(gce)
         } else {
-            unreachable!()
+            bail!("Failed to discover authentication credentials from environment")
         };
-        return 1;
+        let project_id = self.get_project_id().await?;
+        Ok(PubSub {
+            project_id,
+            auth_provider,
+        })
     }
 
-    async fn auto_get_gce(&mut self) -> Result<()> {
+    async fn build_auth(sa_key: SAKey) -> std::result::Result<Authenticator, std::io::Error> {
+        oauth2::ServiceAccountAuthenticator::builder(sa_key)
+            .build()
+            .await
+    }
+
+    async fn auto_get_gce(&self) -> Result<Option<Gce>> {
         let gce = Client::new();
         if gce.on_gce().await? {
-            self.gce = Some(gce);
-            Ok(())
+            Ok(Some(gce))
         } else {
-            bail!("Not on GCE")
+            Ok(None)
         }
     }
-    async fn get_project_id(&self) -> Result<String> {
-        if let Some(project_id) = &self.project_id {
-            Ok(project_id.clone())
+    async fn get_project_id(&mut self) -> Result<String> {
+        Ok(if let Some(proj_id) = self.project_id.take() {
+            proj_id
         } else if let Ok(id) = std::env::var("GCLOUD_PROJECT_ID") {
-            Ok(id)
+            id
         } else if let Some(gce) = &self.gce {
-            Ok(gce.project_id().await?)
-        } else if let Some(SAKey {
-            project_id: Some(project_id),
-            ..
-        }) = &self.sa_key
-        {
-            Ok(project_id.clone())
+            gce.project_id().await?
+        } else if let Some(sa_key) = self.sa_key.as_ref().and_then(|sa| sa.project_id.as_ref()) {
+            sa_key.clone()
         } else {
-            bail!("Failed to discover project ID")
-        }
+            bail!("No project ID found (is your keyfile missing data?)")
+        })
     }
-    async fn auto_get_sa_key(&mut self) -> Result<()> {
-        if let Ok(keypath) = std::env::var("GOOGLE_APPLICATION_CREDENTIALS") {
-            self.set_sa_key(&keypath).await?;
-            Ok(())
+    async fn auto_get_sa_key(&mut self) -> Result<Option<SAKey>> {
+        if let Some(sa_key) = self.sa_key.take() {
+            Ok(Some(sa_key))
+        } else if let Ok(keypath) = std::env::var("GOOGLE_APPLICATION_CREDENTIALS") {
+            Ok(Some(Self::get_sa_key(&keypath).await?))
         } else {
-            bail!("No env variable found")
+            Ok(None)
         }
     }
     pub async fn set_sa_key(&mut self, keypath: &str) -> Result<()> {
-        let key = tokio::fs::read_to_string(keypath).await?;
-        let key = oauth2::parse_service_account_key(key)?;
-        self.sa_key = Some(key);
+        self.sa_key = Some(Self::get_sa_key(keypath).await?);
         Ok(())
     }
-    async fn get_auth(&self) -> Result<String> {
-        // let auth = oauth2::ApplicationSecret{}
-        if let Ok(keypath) = std::env::var("GOOGLE_APPLICATION_CREDENTIALS") {
-            let key = tokio::fs::read_to_string(keypath).await?;
-            let key = oauth2::parse_service_account_key(key)?;
-            Ok(key.private_key)
-        } else if let Some(gce) = &self.gce {
-            Ok(gce.token(None).await?)
-        } else {
-            bail!("failed to get authentication credentials")
-        }
+    async fn get_sa_key(keypath: &str) -> Result<SAKey> {
+        let key = tokio::fs::read_to_string(keypath).await?;
+        let key = oauth2::parse_service_account_key(key)?;
+        Ok(key)
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 enum AuthProvider {
     Gce(Gce),
-    SAKey(SAKey),
+    SA(Authenticator),
+}
+
+impl AuthProvider {
+    async fn token(&self) -> Result<AccessToken> {
+        let token: AccessToken = match self {
+            Self::Gce(gce) => serde_json::from_str::<GceResponse>(&gce.token(None).await?)?.into(),
+            Self::SA(auth) => {
+                auth.token(&["https://www.googleapis.com/auth/pubsub"])
+                    .await?
+            }
+        };
+        Ok(token)
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct GceResponse {
+    access_token: String,
+    expires_in: i64,
+}
+
+impl From<GceResponse> for AccessToken {
+    fn from(resp: GceResponse) -> Self {
+        TokenInfo {
+            access_token: resp.access_token,
+            expires_at: Some(
+                time::OffsetDateTime::now_utc() + time::Duration::seconds(resp.expires_in),
+            ),
+            id_token: None,
+            refresh_token: None,
+        }
+        .into()
+    }
 }
