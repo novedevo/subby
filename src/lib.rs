@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub struct PubSub {
     project_id: String,
@@ -17,7 +17,6 @@ impl PubSub {
                 env!("CARGO_PKG_VERSION"),
             ))
             .timeout(std::time::Duration::from_secs(30))
-            .http2_prior_knowledge()
             .https_only(true)
             .build()?;
 
@@ -51,11 +50,15 @@ impl Topic<'_> {
     where
         S: Serialize,
     {
-        self.internal_publish(&PubSubMessages::oneshot(message)?)
-            .await
+        let response = self
+            .internal_publish(&PubSubMessages::oneshot(message)?)
+            .await?
+            .pop()
+            .unwrap();
+        Ok(response)
     }
 
-    pub async fn publish_all<S>(&self, messages: &[S]) -> Result<String>
+    pub async fn publish_all<S>(&self, messages: &[S]) -> Result<Vec<String>>
     where
         S: Serialize,
     {
@@ -90,7 +93,7 @@ impl Topic<'_> {
             .to_string())
     }
 
-    async fn internal_publish(&self, messages: &PubSubMessages) -> Result<String> {
+    async fn internal_publish(&self, messages: &PubSubMessages) -> Result<Vec<String>> {
         let url = format!(
             "https://pubsub.googleapis.com/v1/projects/{}/topics/{}:publish",
             self.project_id, self.topic
@@ -106,7 +109,9 @@ impl Topic<'_> {
             .text()
             .await?;
 
-        Ok(res)
+        let messages: PubSubResponse = serde_json::from_str(&res)?;
+
+        Ok(messages.message_ids)
     }
 }
 
@@ -163,4 +168,10 @@ impl PubSubMessage {
         let bytes = base64::encode_config(json, base64::URL_SAFE);
         Ok(Self { data: bytes })
     }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PubSubResponse {
+    message_ids: Vec<String>,
 }
