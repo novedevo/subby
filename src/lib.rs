@@ -21,6 +21,46 @@ pub struct PubSub {
     auth_provider: AuthProvider,
 }
 
+impl PubSub {
+    pub async fn topic(self, topic: String) -> Result<Topic> {
+        Ok(Topic {
+            project_id: self.project_id,
+            token: self.auth_provider.token().await?,
+            auth_provider: self.auth_provider,
+            topic,
+            client: reqwest::Client::new(),
+        })
+    }
+}
+
+pub struct Topic {
+    project_id: String,
+    auth_provider: AuthProvider,
+    token: AccessToken,
+    topic: String,
+    client: reqwest::Client,
+}
+
+impl Topic {
+    pub async fn publish<S>(&mut self, message: S) -> Result<String>
+    where
+        S: serde::Serialize,
+    {
+        if self.token.is_expired() {
+            self.token = self.auth_provider.token().await?;
+        }
+        let res = net::publish(
+            &self.client,
+            &self.topic,
+            &self.project_id,
+            self.token.as_str(),
+            serde_json::to_string(&message)?,
+        )
+        .await?;
+        Ok(res)
+    }
+}
+
 type Gce = Client<HttpConnector, Body>;
 type SAKey = oauth2::ServiceAccountKey;
 type Authenticator = oauth2::authenticator::Authenticator<HttpsConnector<HttpConnector>>;
