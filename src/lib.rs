@@ -9,10 +9,21 @@ pub struct PubSub {
 impl PubSub {
     pub async fn new() -> Result<Self> {
         let auth = gcp_auth::AuthenticationManager::new().await?;
+        let client = reqwest::Client::builder()
+            .user_agent(concat!(
+                env!("CARGO_PKG_NAME"),
+                "/",
+                env!("CARGO_PKG_VERSION"),
+            ))
+            .timeout(std::time::Duration::from_secs(30))
+            .http2_prior_knowledge()
+            .https_only(true)
+            .build()?;
+
         Ok(Self {
             project_id: auth.project_id().await?,
             auth,
-            client: reqwest::Client::new(),
+            client,
         })
     }
     pub async fn topic(&self, topic: String) -> Result<Topic<'_>> {
@@ -22,9 +33,7 @@ impl PubSub {
             topic,
             client: &self.client,
         };
-        if !topic.is_valid().await {
-            bail!("Invalid topic name");
-        }
+        topic.is_valid().await?;
         Ok(topic)
     }
 }
@@ -52,8 +61,8 @@ impl Topic<'_> {
         let res = self
             .client
             .post(url)
+            .bearer_auth(token.as_str())
             .header("User-Agent", "subby_rs/0.1.0")
-            .header("Authorization", format!("Bearer {}", token.as_str()))
             .json(message)
             .send()
             .await?
@@ -62,16 +71,18 @@ impl Topic<'_> {
 
         Ok(res)
     }
-    pub(crate) async fn is_valid(&self) -> bool {
+    pub(crate) async fn is_valid(&self) -> Result<()> {
         let url = format!(
             "https://pubsub.googleapis.com/v1/projects/{}/topics/{}",
             self.project_id, self.topic
         );
-        let req = self.client.get(url).send().await;
-        if let Ok(res) = req {
-            res.status() == 200
+        let req = self.client.get(url).send().await?;
+        if req.status() == 200 {
+            Ok(())
+        } else if req.status() == 404 {
+            bail!("Topic not found")
         } else {
-            false
+            bail!("Topic query returned status {}", req.status())
         }
     }
 }
