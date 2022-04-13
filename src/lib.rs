@@ -1,4 +1,5 @@
 use anyhow::{bail, Result};
+use serde::Serialize;
 
 pub struct PubSub {
     project_id: String,
@@ -48,35 +49,30 @@ pub struct Topic<'a> {
 impl Topic<'_> {
     pub async fn publish<S>(&self, message: &S) -> Result<String>
     where
-        S: serde::Serialize,
+        S: Serialize,
     {
-        let url = format!(
-            "https://pubsub.googleapis.com/v1/projects/{}/topics/{}:publish",
-            self.project_id, self.topic
-        );
-        let token = self
-            .auth
-            .get_token(&["https://www.googleapis.com/auth/pubsub"])
-            .await?;
-        let res = self
-            .client
-            .post(url)
-            .bearer_auth(token.as_str())
-            .header("User-Agent", "subby_rs/0.1.0")
-            .json(message)
-            .send()
-            .await?
-            .text()
-            .await?;
-
-        Ok(res)
+        self.internal_publish(&PubSubMessages::oneshot(message)?)
+            .await
     }
+
+    pub async fn publish_all<S>(&self, messages: &[S]) -> Result<String>
+    where
+        S: Serialize,
+    {
+        self.internal_publish(&messages.into()).await
+    }
+
     pub(crate) async fn is_valid(&self) -> Result<()> {
         let url = format!(
             "https://pubsub.googleapis.com/v1/projects/{}/topics/{}",
             self.project_id, self.topic
         );
-        let req = self.client.get(url).send().await?;
+        let req = self
+            .client
+            .get(url)
+            .bearer_auth(self.token().await?)
+            .send()
+            .await?;
         if req.status() == 200 {
             Ok(())
         } else if req.status() == 404 {
@@ -84,5 +80,87 @@ impl Topic<'_> {
         } else {
             bail!("Topic query returned status {}", req.status())
         }
+    }
+    async fn token(&self) -> Result<String> {
+        Ok(self
+            .auth
+            .get_token(&["https://www.googleapis.com/auth/pubsub"])
+            .await?
+            .as_str()
+            .to_string())
+    }
+
+    async fn internal_publish(&self, messages: &PubSubMessages) -> Result<String> {
+        let url = format!(
+            "https://pubsub.googleapis.com/v1/projects/{}/topics/{}:publish",
+            self.project_id, self.topic
+        );
+        let res = self
+            .client
+            .post(url)
+            .bearer_auth(self.token().await?)
+            .header("User-Agent", "subby_rs/0.1.0")
+            .json(messages)
+            .send()
+            .await?
+            .text()
+            .await?;
+
+        Ok(res)
+    }
+}
+
+#[derive(Serialize)]
+struct PubSubMessages {
+    messages: Vec<PubSubMessage>,
+}
+
+impl PubSubMessages {
+    pub(crate) fn oneshot<S>(message: &S) -> Result<Self>
+    where
+        S: Serialize,
+    {
+        Ok(Self {
+            messages: vec![PubSubMessage::new(message)?],
+        })
+    }
+}
+
+#[allow(clippy::from_over_into)] //we can't convert PubSubMessages into anything serializable, lol
+impl<S> Into<PubSubMessages> for &[S]
+where
+    S: Serialize,
+{
+    fn into(self) -> PubSubMessages {
+        let messages = self.iter().map(|s| (s,).into()).collect();
+        PubSubMessages { messages }
+    }
+}
+
+#[allow(clippy::from_over_into)]
+impl<S> Into<PubSubMessage> for (S,)
+where
+    S: Serialize,
+{
+    fn into(self) -> PubSubMessage {
+        let json = serde_json::to_vec(&self).expect("serde to work");
+        let bytes = base64::encode_config(json, base64::URL_SAFE);
+        PubSubMessage { data: bytes }
+    }
+}
+
+#[derive(Serialize)]
+struct PubSubMessage {
+    data: String,
+}
+
+impl PubSubMessage {
+    pub(crate) fn new<S>(message: &S) -> Result<Self>
+    where
+        S: Serialize,
+    {
+        let json = serde_json::to_vec(message)?;
+        let bytes = base64::encode_config(json, base64::URL_SAFE);
+        Ok(Self { data: bytes })
     }
 }
