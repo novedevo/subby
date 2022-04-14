@@ -115,7 +115,7 @@ impl Topic<'_> {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct PubSubMessages {
     messages: Vec<PubSubMessage>,
 }
@@ -143,18 +143,19 @@ where
 }
 
 #[allow(clippy::from_over_into)]
+//We can't implement it for all S because of weird generic foreign trait impls that I don't understand
 impl<S> Into<PubSubMessage> for (S,)
 where
     S: Serialize,
 {
     fn into(self) -> PubSubMessage {
-        let json = serde_json::to_vec(&self).expect("serde to work");
+        let json = serde_json::to_vec(&self.0).expect("serde to work");
         let bytes = base64::encode_config(json, base64::URL_SAFE);
         PubSubMessage { data: bytes }
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct PubSubMessage {
     data: String,
 }
