@@ -38,6 +38,7 @@ impl PubSub {
     }
 }
 
+#[derive(Clone)]
 pub struct Topic<'a> {
     project_id: &'a str,
     auth: &'a gcp_auth::AuthenticationManager,
