@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 pub struct PubSub {
     project_id: String,
-    auth: gcp_auth::AuthenticationManager,
+    auth: std::sync::Arc<gcp_auth::AuthenticationManager>,
     client: reqwest::Client,
 }
 
@@ -22,16 +22,16 @@ impl PubSub {
 
         Ok(Self {
             project_id: auth.project_id().await?,
-            auth,
+            auth: std::sync::Arc::new(auth),
             client,
         })
     }
-    pub async fn topic(&self, topic: String) -> Result<Topic<'_>> {
+    pub async fn topic(&self, topic: String) -> Result<Topic> {
         let topic = Topic {
-            project_id: &self.project_id,
-            auth: &self.auth,
+            project_id: self.project_id.to_string(),
+            auth: self.auth.clone(),
             topic,
-            client: &self.client,
+            client: self.client.clone(),
         };
         topic.is_valid().await?;
         Ok(topic)
@@ -39,14 +39,14 @@ impl PubSub {
 }
 
 #[derive(Clone)]
-pub struct Topic<'a> {
-    project_id: &'a str,
-    auth: &'a gcp_auth::AuthenticationManager,
+pub struct Topic {
+    project_id: String,
+    auth: std::sync::Arc<gcp_auth::AuthenticationManager>,
     topic: String,
-    client: &'a reqwest::Client,
+    client: reqwest::Client,
 }
 
-impl Topic<'_> {
+impl Topic {
     pub async fn publish<S>(&self, message: &S) -> Result<String>
     where
         S: Serialize,
