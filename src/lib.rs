@@ -105,6 +105,7 @@ impl Topic {
             .json(messages)
             .send()
             .await?
+            .error_for_status()?
             .text()
             .await?;
 
