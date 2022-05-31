@@ -71,16 +71,14 @@ impl Topic {
             "https://pubsub.googleapis.com/v1/projects/{}/topics/{}",
             self.project_id, self.topic
         );
-        let req = self
-            .client
-            .get(url)
-            .bearer_auth(self.token().await?)
-            .send()
-            .await?;
+        let token = self.token().await?;
+        let req = self.client.get(url).bearer_auth(&token).send().await?;
         if req.status() == 200 {
             Ok(())
         } else if req.status() == 404 {
             bail!("Topic not found")
+        } else if req.status() == 403 {
+            bail!("Topic query unauthorized, despite token {}", token)
         } else {
             bail!("Topic query returned status {}", req.status())
         }
