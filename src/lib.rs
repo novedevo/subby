@@ -89,6 +89,7 @@ impl Topic {
             .get_token(&["https://www.googleapis.com/auth/pubsub"])
             .await?
             .as_str()
+            .trim_end_matches('.') // cursed, see https://stackoverflow.com/questions/68654502
             .to_string())
     }
 
