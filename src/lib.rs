@@ -132,27 +132,26 @@ impl PubSubMessages {
     }
 }
 
-#[allow(clippy::from_over_into)] //we can't convert PubSubMessages into anything serializable, lol
-impl<S> Into<PubSubMessages> for &[S]
+impl<S> From<&[S]> for PubSubMessages
 where
     S: Serialize,
 {
-    fn into(self) -> PubSubMessages {
-        let messages = self.iter().map(|s| (s,).into()).collect();
-        PubSubMessages { messages }
+    fn from(messages: &[S]) -> Self {
+        Self {
+            messages: messages.iter().map(|s| (s,).into()).collect(),
+        }
     }
 }
 
-#[allow(clippy::from_over_into)]
-//We can't implement it for all S because of weird generic foreign trait impls that I don't understand
-impl<S> Into<PubSubMessage> for (S,)
+//We can't implement it for all S because it would conflict with the blanket From impl, waiting on specialization to fix this
+impl<S> From<(S,)> for PubSubMessage
 where
     S: Serialize,
 {
-    fn into(self) -> PubSubMessage {
-        let json = serde_json::to_vec(&self.0).expect("serde to work");
-        let bytes = base64::encode_config(json, base64::URL_SAFE);
-        PubSubMessage { data: bytes }
+    fn from(message: (S,)) -> Self {
+        let json = serde_json::to_vec(&message.0).expect("serialization to work");
+        let data = base64::encode_config(json, base64::URL_SAFE);
+        Self { data }
     }
 }
 
