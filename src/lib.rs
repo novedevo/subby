@@ -1,5 +1,8 @@
+pub mod pubsub_message;
+
 use anyhow::{bail, Result};
-use serde::{Deserialize, Serialize};
+use pubsub_message::{PubSubMessages, PubSubResponse};
+use serde::Serialize;
 
 pub struct PubSub {
     project_id: String,
@@ -114,65 +117,4 @@ impl Topic {
 
         Ok(messages.message_ids)
     }
-}
-
-#[derive(Serialize, Debug)]
-struct PubSubMessages {
-    messages: Vec<PubSubMessage>,
-}
-
-impl PubSubMessages {
-    pub(crate) fn oneshot<S>(message: &S) -> Result<Self>
-    where
-        S: Serialize,
-    {
-        Ok(Self {
-            messages: vec![PubSubMessage::new(message)?],
-        })
-    }
-}
-
-impl<S> From<&[S]> for PubSubMessages
-where
-    S: Serialize,
-{
-    fn from(messages: &[S]) -> Self {
-        Self {
-            messages: messages.iter().map(|s| (s,).into()).collect(),
-        }
-    }
-}
-
-//We can't implement it for all S because it would conflict with the blanket From impl, waiting on specialization to fix this
-impl<S> From<(S,)> for PubSubMessage
-where
-    S: Serialize,
-{
-    fn from(message: (S,)) -> Self {
-        let json = serde_json::to_vec(&message.0).expect("serialization to work");
-        let data = base64::encode_config(json, base64::URL_SAFE);
-        Self { data }
-    }
-}
-
-#[derive(Serialize, Debug)]
-struct PubSubMessage {
-    data: String,
-}
-
-impl PubSubMessage {
-    pub(crate) fn new<S>(message: &S) -> Result<Self>
-    where
-        S: Serialize,
-    {
-        let json = serde_json::to_vec(message)?;
-        let bytes = base64::encode_config(json, base64::URL_SAFE);
-        Ok(Self { data: bytes })
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PubSubResponse {
-    message_ids: Vec<String>,
 }
